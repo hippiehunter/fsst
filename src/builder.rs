@@ -673,7 +673,7 @@ impl CompressorBuilder {
 
         while (in_ptr as usize) < (in_end_sub8) {
             // SAFETY: ensured in-bounds by loop condition.
-            let word: u64 = unsafe { std::ptr::read_unaligned(in_ptr as *const u64) };
+            let word: u64 = u64::from_le(unsafe { std::ptr::read_unaligned(in_ptr as *const u64) });
             let code = self.find_longest_symbol(word);
             let code_u16 = code.extended_code();
 

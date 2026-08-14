@@ -6,15 +6,17 @@ use core::str;
 use std::{
     error::Error,
     fs::{self, DirBuilder, File},
-    io::{Read, Write},
+    io::Read,
     path::Path,
+    process::Command,
 };
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
-use curl::easy::Easy;
 use fsst::Compressor;
 
+/// Fetch a benchmark corpus with the system `curl` binary, avoiding a libcurl/openssl
+/// build dependency that does not cross-compile cleanly.
 fn download_dataset(url: &str, path: impl AsRef<Path>) -> Result<(), Box<dyn Error>> {
     let target = path.as_ref();
 
@@ -28,29 +30,21 @@ fn download_dataset(url: &str, path: impl AsRef<Path>) -> Result<(), Box<dyn Err
         return Ok(());
     }
 
-    let mut handle = Easy::new();
-
-    let mut buffer = Vec::new();
-    handle.url(url)?;
-    {
-        let mut transfer = handle.transfer();
-        transfer.write_function(|data| {
-            buffer.extend_from_slice(data);
-
-            Ok(data.len())
-        })?;
-        transfer.perform()?;
-    }
-
-    let mut output = File::create(target)?;
-    match output.write_all(&buffer) {
-        Ok(()) => {}
-        Err(err) => {
-            // cleanup in case of failure
-            fs::remove_file(target).unwrap();
-
-            return Err(Box::new(err));
-        }
+    let status = Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--output",
+        ])
+        .arg(target)
+        .arg(url)
+        .status()?;
+    if !status.success() {
+        // cleanup in case of a partial download
+        let _ = fs::remove_file(target);
+        return Err(format!("curl failed to download {url}").into());
     }
 
     Ok(())

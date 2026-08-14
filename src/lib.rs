@@ -1,5 +1,9 @@
 #![doc = include_str!("../README.md")]
-#![cfg(target_endian = "little")]
+// Symbols pack up to 8 string bytes into a `u64` with the first byte in the least-significant
+// position (a little-endian convention at the *value* level). All word loads/stores at the
+// byte boundary use explicit little-endian conversions, so the crate is endian-portable:
+// `u64::from_le`/`to_le` are no-ops on little-endian targets and a single byte-reverse on
+// big-endian targets such as s390x.
 
 /// Throw a compiler error if a type isn't guaranteed to have a specific size in bytes.
 macro_rules! assert_sizeof {
@@ -56,7 +60,8 @@ impl Symbol {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(self) -> usize {
         let numeric = self.0;
-        // For little-endian platforms, this counts the number of *trailing* zeros
+        // The first string byte lives in the least-significant byte, so the 0x00 padding
+        // occupies the most-significant bytes and `leading_zeros` counts it on any target.
         let null_bytes = (numeric.leading_zeros() >> 3) as usize;
 
         // Special case handling of a symbol with all-zeros. This is actually
@@ -292,9 +297,9 @@ impl<'a> Decompressor<'a> {
 
             macro_rules! store_next_symbol {
                 ($code:expr) => {{
-                    out_ptr
-                        .cast::<u64>()
-                        .write_unaligned(self.symbols.get_unchecked($code as usize).to_u64());
+                    out_ptr.cast::<u64>().write_unaligned(
+                        self.symbols.get_unchecked($code as usize).to_u64().to_le(),
+                    );
                     out_ptr = out_ptr.add(*self.lengths.get_unchecked($code as usize) as usize);
                 }};
             }
@@ -307,7 +312,7 @@ impl<'a> Decompressor<'a> {
 
                 while out_ptr.cast_const() <= block_out_end && in_ptr < block_in_end {
                     // Note that we load a little-endian u64 here.
-                    let next_block = in_ptr.cast::<u64>().read_unaligned();
+                    let next_block = u64::from_le(in_ptr.cast::<u64>().read_unaligned());
                     let escape_mask = (next_block & 0x8080808080808080)
                         & ((((!next_block) & 0x7F7F7F7F7F7F7F7F) + 0x7F7F7F7F7F7F7F7F)
                             ^ 0x8080808080808080);
@@ -596,6 +601,9 @@ impl Compressor {
     /// Using the symbol table, runs a single cycle of compression on an input word, writing
     /// the output into `out_ptr`.
     ///
+    /// `word` must hold the next input bytes in little-endian order (the first input byte in
+    /// the least-significant position), e.g. as produced by [`u64::from_le_bytes`].
+    ///
     /// # Returns
     ///
     /// This function returns a tuple of (advance_in, advance_out) with the number of bytes
@@ -721,9 +729,9 @@ impl Compressor {
         while (in_ptr as usize) <= in_end_sub8 && unsafe { out_end.offset_from(out_ptr) } >= 2 {
             // SAFETY: pointer ranges are checked in the loop condition
             unsafe {
-                // Load a full 8-byte word of data from in_ptr.
+                // Load a full 8-byte little-endian word of data from in_ptr.
                 // SAFETY: caller asserts in_ptr is not null. we may read past end of pointer though.
-                let word: u64 = std::ptr::read_unaligned(in_ptr as *const u64);
+                let word: u64 = u64::from_le(std::ptr::read_unaligned(in_ptr as *const u64));
                 let (advance_in, advance_out) = self.compress_word(word, out_ptr);
                 in_ptr = in_ptr.byte_add(advance_in);
                 out_ptr = out_ptr.byte_add(advance_out);
